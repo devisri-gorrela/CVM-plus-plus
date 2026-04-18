@@ -32,8 +32,8 @@ Featuring strict architectural protections, CVM++ executes custom typed instruct
 You can build CVM++ directly using **CMake**:
 
 ```bash
-git clone https://github.com/yourusername/CVM_PlusPlus.git
-cd CVM_PlusPlus
+git clone https://github.com/devisri-gorrela/CVM-plus-plus.git
+cd CVM-plus-plus
 
 # Create Build Directory and configure
 cmake -B build -DCMAKE_BUILD_TYPE=Release
