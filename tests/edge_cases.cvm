@@ -1,0 +1,150 @@
+// ============================================================
+// SECTION 1: Integer boundary tests
+// Tests INT32_MIN (-2147483648) and INT32_MAX (2147483647)
+// ============================================================
+
+// Edge case tests for CVM++
+// Tests boundary conditions, operator precedence, and nested control flow
+
+// --- Integer boundary tests ---
+let min_int = -2147483648;
+let max_int = 2147483647;
+
+print min_int;       // Expected output: -2147483648
+print max_int;       // Expected output: 2147483647
+
+
+// ============================================================
+// SECTION 2: Nested scoping with variable shadowing
+// Tests 3 levels of block scoping where inner 'x' shadows outer
+// ============================================================
+
+// --- Nested scoping with shadowing ---
+let x = 10;
+{                       // scope depth 1
+    let x = 20;
+    {                   // scope depth 2
+        let x = 30;
+        print x;        // Expected: 30 (innermost shadow)
+    }
+    print x;            // Expected: 20 (middle shadow)
+}
+print x;                // Expected: 10 (original)
+
+
+// ============================================================
+// SECTION 3: Operator precedence verification
+// Should compute: 2 + (3 * 4) - (6 / 2) = 2 + 12 - 3 = 11
+// ============================================================
+
+// --- Operator precedence chain ---
+let result = 2 + 3 * 4 - 6 / 2;
+print result;           // Expected: 11
+
+
+// ============================================================
+// SECTION 4: Bitwise operators
+// 5 = 0b0101, 3 = 0b0011
+// AND = 0b0001 = 1, OR = 0b0111 = 7, XOR = 0b0110 = 6
+// ============================================================
+
+// --- Bitwise with logical ---
+let a = 5;
+let b = 3;
+print a & b;            // Expected: 1
+print a | b;            // Expected: 7
+print a ^ b;            // Expected: 6
+
+
+// ============================================================
+// SECTION 5: Short-circuit evaluation
+// If false && (...) — the right side should NOT execute
+// So 'flag' should remain 0
+// ============================================================
+
+// --- Short-circuit evaluation ---
+let flag = 0;
+if (false && (flag = 1)) {
+    print 1;
+}
+print flag;             // Expected: 0 (assignment was short-circuited)
+
+
+// ============================================================
+// SECTION 6: Nested loops with break/continue
+// Loops i = 0 to 9, skips evens (continue), breaks after i > 7
+// Active values: 1 + 3 + 5 + 7 = 16
+// ============================================================
+
+// --- Nested loops with break/continue ---
+let sum = 0;
+for (let i = 0; i < 10; i = i + 1) {
+    if (i % 2 == 0) {
+        continue;       // skip even numbers: 0, 2, 4, 6, 8
+    }
+
+    if (i > 7) {
+        break;          // stop when i = 9
+    }
+
+    sum = sum + i;      // adds: 1 + 3 + 5 + 7
+}
+print sum;              // Expected: 16
+
+
+// ============================================================
+// SECTION 7: Truthiness normalization
+// Tests that non-zero is truthy, zero is falsy
+// ============================================================
+
+// --- Truthiness normalization ---
+let nonzero = 42;
+let zero = 0;
+
+if (nonzero) {
+    print 1;            // Expected: 1
+}
+
+if (!zero) {
+    print 2;            // Expected: 2
+}
+
+
+// ============================================================
+// SECTION 8: Shift operations
+// 16 >> 2 = 4 (divide by 4), 16 << 1 = 32 (multiply by 2)
+// ============================================================
+
+// --- Shift operations ---
+let val = 16;
+print val >> 2;         // Expected: 4
+print val << 1;         // Expected: 32
+
+
+// ============================================================
+// SECTION 9: Chained assignment
+// Right-to-left: b_val = 5 first, then a_val = 5
+// ============================================================
+
+// --- Chained assignment ---
+let a_val = 0;
+let b_val = 0;
+
+a_val = b_val = 5;
+
+print a_val;            // Expected: 5
+print b_val;            // Expected: 5
+
+
+// ============================================================
+// SECTION 10: Postfix vs prefix increment
+// counter++ returns OLD value (5), then increments to 6
+// ++counter increments to 7, then returns NEW value (7)
+// ============================================================
+
+// --- Postfix vs prefix ---
+let counter = 5;
+
+print counter++;        // Expected: 5 (postfix: returns old value)
+print counter;          // Expected: 6 (now incremented)
+print ++counter;        // Expected: 7 (prefix: returns new value)

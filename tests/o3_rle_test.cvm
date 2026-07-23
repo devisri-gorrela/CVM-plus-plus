@@ -1,0 +1,23 @@
+// o3_rle_test.cvm
+// Verifies RLE line mapping correctness
+
+print 1; print 2; // Line 4: Two instructions
+
+// Line 6-10: Empty/Comments
+
+
+
+
+print 3; // Line 11
+
+let x = 0;
+while (x < 2) {
+    print 100 + x;
+    x++;
+}
+
+if (true) {
+    print 200;
+} else {
+    print 300;
+}

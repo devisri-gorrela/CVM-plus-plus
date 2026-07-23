@@ -1,10 +1,20 @@
+/**
+ * @file lexer.cpp
+ * @brief Lexer/tokenizer implementation for the CVM++ language.
+ *
+ * Converts raw source text into a flat vector of Tokens with full location
+ * tracking. Handles single-line and block comments, numeric literals with
+ * base prefixes (0x/0b/0o), multi-character operators, and keyword
+ * recognition via an unordered_map lookup table.
+ */
+
 #include "lexer.h"
+#include "error.h"
 #include <cctype>
 #include <unordered_map>
-#include <stdexcept>
 #include <string>
 
-Lexer::Lexer(const std::string& source) : source(source), pos(0), line(1), column(1) {}
+Lexer::Lexer(const std::string& source_) : source(source_), pos(0), line(1), column(1) {}
 
 char Lexer::peek() const {
     if (isAtEnd()) return '\0';
@@ -37,9 +47,27 @@ void Lexer::skipWhitespace() {
         if (c == ' ' || c == '\r' || c == '\t' || c == '\n') {
             advance();
         } else if (c == '/' && peekNext() == '/') {
-            // Comment
+            // Single-line comment
             while (!isAtEnd() && peek() != '\n') {
                 advance();
+            }
+        } else if (c == '/' && peekNext() == '*') {
+            // Block comment (non-nesting, matching C behavior)
+            int commentStartLine = line;
+            advance(); // skip '/'
+            advance(); // skip '*'
+            bool closed = false;
+            while (!isAtEnd()) {
+                if (peek() == '*' && peekNext() == '/') {
+                    advance(); // skip '*'
+                    advance(); // skip '/'
+                    closed = true;
+                    break;
+                }
+                advance();
+            }
+            if (!closed) {
+                throw LexError("Unterminated block comment", commentStartLine, column);
             }
         } else {
             break;
@@ -48,17 +76,22 @@ void Lexer::skipWhitespace() {
 }
 
 Token Lexer::createToken(TokenType type, const std::string& value) {
-    return {type, value, line, column - static_cast<int>(value.length())};
+    int startCol = std::max(1, column - static_cast<int>(value.length()));
+    return {type, value, line, startCol};
 }
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> tokens;
+    tokens.reserve(source.length() / 8 + 1);  // ~8 chars/token average
     
     static const std::unordered_map<std::string, TokenType> keywords = {
         {"let", TokenType::LET},
         {"if", TokenType::IF},
         {"else", TokenType::ELSE},
         {"while", TokenType::WHILE},
+        {"for", TokenType::FOR},
+        {"break", TokenType::BREAK},
+        {"continue", TokenType::CONTINUE},
         {"print", TokenType::PRINT},
         {"input", TokenType::INPUT},
         {"true", TokenType::TRUE_LIT},
@@ -87,6 +120,62 @@ std::vector<Token> Lexer::tokenize() {
         }
 
         if (std::isdigit(c)) {
+            // I2: Support 0x (hex), 0b (binary), 0o (octal) prefixes
+            if (c == '0' && !isAtEnd()) {
+                char next = peekNext();
+                if (next == 'x' || next == 'X') {
+                    advance(); advance(); // skip '0x'
+                    std::string hex;
+                    while (!isAtEnd() && std::isxdigit(static_cast<unsigned char>(peek()))) hex += advance();
+                    if (hex.empty()) throw LexError("Expected hex digits after '0x'", line, column);
+                    try {
+                        long long val = std::stoll(hex, nullptr, 16);
+                        if (val > INT32_MAX || val < INT32_MIN) throw LexError("Hex literal out of int32 range", line, column);
+                        tokens.push_back(createToken(TokenType::NUMBER, std::to_string(val)));
+                    } catch (const std::out_of_range&) {
+                        throw LexError("Hex literal out of int32 range", line, column);
+                    } catch (const std::invalid_argument&) {
+                        throw LexError("Invalid hex literal", line, column);
+                    }
+                    continue;
+                } else if (next == 'b' || next == 'B') {
+                    advance(); advance(); // skip '0b'
+                    std::string bin;
+                    while (!isAtEnd() && (peek() == '0' || peek() == '1')) bin += advance();
+                    if (bin.empty()) throw LexError("Expected binary digits after '0b'", line, column);
+                    try {
+                        long long val = std::stoll(bin, nullptr, 2);
+                        if (val > INT32_MAX || val < INT32_MIN) throw LexError("Binary literal out of int32 range", line, column);
+                        tokens.push_back(createToken(TokenType::NUMBER, std::to_string(val)));
+                    } catch (const std::out_of_range&) {
+                        throw LexError("Binary literal out of int32 range", line, column);
+                    } catch (const std::invalid_argument&) {
+                        throw LexError("Invalid binary literal", line, column);
+                    }
+                    continue;
+                } else if (next == 'o' || next == 'O') {
+                    advance(); advance(); // skip '0o'
+                    std::string oct;
+                    while (!isAtEnd() && peek() >= '0' && peek() <= '7') oct += advance();
+                    if (oct.empty()) throw LexError("Expected octal digits after '0o'", line, column);
+                    try {
+                        long long val = std::stoll(oct, nullptr, 8);
+                        if (val > INT32_MAX || val < INT32_MIN) throw LexError("Octal literal out of int32 range", line, column);
+                        tokens.push_back(createToken(TokenType::NUMBER, std::to_string(val)));
+                    } catch (const std::out_of_range&) {
+                        throw LexError("Octal literal out of int32 range", line, column);
+                    } catch (const std::invalid_argument&) {
+                        throw LexError("Invalid octal literal", line, column);
+                    }
+                    continue;
+                }
+                // Block leading-zero decimals (e.g., 0123) to avoid C/Java ambiguity; require '0o' for octals.
+               // State note: peek() is still on '0', and peekNext() is the character immediately after.
+                char nextCh = peekNext();
+                if (nextCh >= '1' && nextCh <= '9') {
+                    throw LexError("Leading zeros not allowed in decimal literals (use 0o for octal)", line, column);
+                }
+            }
             std::string num;
             num.reserve(16);
             while (!isAtEnd() && std::isdigit(peek())) {
@@ -99,8 +188,22 @@ std::vector<Token> Lexer::tokenize() {
         char advanced = advance();
         
         switch (advanced) {
-            case '+': tokens.push_back(createToken(TokenType::PLUS, "+")); break;
-            case '-': tokens.push_back(createToken(TokenType::MINUS, "-")); break;
+            case '+':
+                if (peek() == '+') {
+                    advance();
+                    tokens.push_back(createToken(TokenType::PLUS_PLUS, "++"));
+                } else {
+                    tokens.push_back(createToken(TokenType::PLUS, "+"));
+                }
+                break;
+            case '-':
+                if (peek() == '-') {
+                    advance();
+                    tokens.push_back(createToken(TokenType::MINUS_MINUS, "--"));
+                } else {
+                    tokens.push_back(createToken(TokenType::MINUS, "-"));
+                }
+                break;
             case '*': tokens.push_back(createToken(TokenType::STAR, "*")); break;
             case '/': tokens.push_back(createToken(TokenType::SLASH, "/")); break;
             case '%': tokens.push_back(createToken(TokenType::MOD, "%")); break;
@@ -167,7 +270,7 @@ std::vector<Token> Lexer::tokenize() {
                 break;
             default: {
                 std::string errText(1, advanced);
-                throw std::runtime_error("Lexer Error [line " + std::to_string(line) + "]: Unexpected character '" + errText + "'");
+                throw LexError("Unexpected character '" + errText + "'", line, column);
             }
         }
     }

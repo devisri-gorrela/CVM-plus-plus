@@ -1,17 +1,30 @@
+/**
+ * @file vm.cpp
+ * @brief Stack-based virtual machine bytecode interpreter implementation.
+ *
+ * Executes compiled bytecode from a Chunk using a fetch-decode-execute loop.
+ * Implements all 27 opcodes with overflow detection (int64_t intermediates),
+ * portable arithmetic right shifts, and stack pointer save/restore for REPL
+ * error recovery. Reports runtime errors with source-line mapping via the
+ * Chunk's RLE-compressed line table.
+ */
+
 #include "vm.h"
+#include "error.h"
 #include <iostream>
-#include <stdexcept>
 #include <limits>
 
-VM::VM() : sp(0) {}
+VM::VM() : sp(0) {
+    variables.resize(MAX_VARIABLES, 0);
+}
 
 void VM::push(int32_t value) {
-    if (sp >= STACK_MAX) throw std::runtime_error("Stack overflow");
+    if (sp >= STACK_MAX) throw RuntimeError("Stack overflow");
     stack[sp++] = value;
 }
 
 int32_t VM::pop() {
-    if (sp == 0) throw std::runtime_error("Stack underflow");
+    if (sp == 0) throw RuntimeError("Stack underflow");
     return stack[--sp];
 }
 
@@ -21,233 +34,271 @@ int32_t VM::peekStack() const {
 }
 
 void VM::execute(const Chunk& chunk) {
-    size_t savedSp = sp;
-    try {
-        size_t ip = 0; // instruction pointer
-        while (ip < chunk.code.size()) {
-        Opcode instruction = static_cast<Opcode>(chunk.code[ip++]);
+    size_t savedSp = sp; // saved so we can restore the stack on error
+    size_t ip = 0;
+    const uint8_t* code = chunk.code.data();
+    size_t codeSize = chunk.code.size();
 
-        switch (instruction) {
-            case Opcode::PUSH_INT: {
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+    static void* dispatch_table[] = {
+        &&do_PUSH_INT, &&do_PUSH_BOOL, &&do_PUSH_0, &&do_PUSH_1,
+        &&do_ADD, &&do_SUB, &&do_MUL, &&do_DIV, &&do_MOD,
+        &&do_EQ, &&do_NEQ, &&do_LT, &&do_GT, &&do_LTE, &&do_GTE,
+        &&do_BIT_XOR, &&do_BIT_AND, &&do_BIT_OR, &&do_SHL, &&do_SHR, &&do_BIT_NOT,
+        &&do_NOT, &&do_NORMALIZE, &&do_NEG, &&do_POP,
+        &&do_SET_VAR, &&do_GET_VAR, &&do_SET_VAR_PUSH,
+        &&do_JMP, &&do_JMP_IF_FALSE, &&do_PRINT, &&do_INPUT, &&do_HALT
+    };
+
+    #define DISPATCH() do { \
+        if (ip >= codeSize) throw RuntimeError("Execution reached end of chunk without HALT"); \
+        goto *dispatch_table[code[ip++]]; \
+    } while(0)
+    #define TARGET(op) do_##op:
+#else
+    #define DISPATCH() goto next_instr
+    #define TARGET(op) case Opcode::op:
+#endif
+
+    try {
+#if defined(__GNUC__) || defined(__clang__)
+        DISPATCH();
+#else
+    next_instr:
+        if (ip >= codeSize) throw RuntimeError("Execution reached end of chunk without HALT");
+        switch (static_cast<Opcode>(code[ip++]))
+#endif
+        {
+            TARGET(PUSH_INT) {
                 int32_t val = chunk.readInt(ip);
                 ip += 4;
                 push(val);
-                break;
+                DISPATCH();
             }
-            case Opcode::PUSH_BOOL: {
-                int32_t val = chunk.code[ip++];
+            TARGET(PUSH_BOOL) {
+                int32_t val = code[ip++];
                 push(val);
-                break;
+                DISPATCH();
             }
-            case Opcode::ADD: {
+            TARGET(PUSH_0) {
+                push(0);
+                DISPATCH();
+            }
+            TARGET(PUSH_1) {
+                push(1);
+                DISPATCH();
+            }
+            TARGET(ADD) {
                 int32_t b = pop();
                 int32_t a = pop();
                 int64_t result = static_cast<int64_t>(a) + static_cast<int64_t>(b);
-                if (result > INT32_MAX || result < INT32_MIN) throw std::runtime_error("Integer overflow in addition");
+                if (result > INT32_MAX || result < INT32_MIN) throw RuntimeError("Integer overflow in addition");
                 push(static_cast<int32_t>(result));
-                break;
+                DISPATCH();
             }
-            case Opcode::SUB: {
+            TARGET(SUB) {
                 int32_t b = pop();
                 int32_t a = pop();
                 int64_t result = static_cast<int64_t>(a) - static_cast<int64_t>(b);
-                if (result > INT32_MAX || result < INT32_MIN) throw std::runtime_error("Integer overflow in subtraction");
+                if (result > INT32_MAX || result < INT32_MIN) throw RuntimeError("Integer overflow in subtraction");
                 push(static_cast<int32_t>(result));
-                break;
+                DISPATCH();
             }
-            case Opcode::MUL: {
+            TARGET(MUL) {
                 int32_t b = pop();
                 int32_t a = pop();
                 int64_t result = static_cast<int64_t>(a) * static_cast<int64_t>(b);
-                if (result > INT32_MAX || result < INT32_MIN) throw std::runtime_error("Integer overflow in multiplication");
+                if (result > INT32_MAX || result < INT32_MIN) throw RuntimeError("Integer overflow in multiplication");
                 push(static_cast<int32_t>(result));
-                break;
+                DISPATCH();
             }
-            case Opcode::DIV: {
+            TARGET(DIV) {
                 int32_t b = pop();
                 int32_t a = pop();
-                if (b == 0) throw std::runtime_error("Division by zero");
-                if (a == INT32_MIN && b == -1) throw std::runtime_error("Integer overflow in division");
+                if (b == 0) throw RuntimeError("Division by zero");
+                if (a == INT32_MIN && b == -1) throw RuntimeError("Integer overflow in division"); 
                 push(a / b);
-                break;
+                DISPATCH();
             }
-            case Opcode::MOD: {
+            TARGET(MOD) {
                 int32_t b = pop();
                 int32_t a = pop();
-                if (b == 0) throw std::runtime_error("Modulo by zero");
-                if (a == INT32_MIN && b == -1) throw std::runtime_error("Integer overflow in modulo");
+                if (b == 0) throw RuntimeError("Modulo by zero");
+                if (a == INT32_MIN && b == -1) throw RuntimeError("Integer overflow in modulo");
                 push(a % b);
-                break;
+                DISPATCH();
             }
-            case Opcode::EQ: {
+            TARGET(EQ) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a == b ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::NEQ: {
+            TARGET(NEQ) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a != b ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::LT: {
+            TARGET(LT) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a < b ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::LTE: {
+            TARGET(LTE) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a <= b ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::GT: {
+            TARGET(GT) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a > b ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::GTE: {
+            TARGET(GTE) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a >= b ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::BIT_XOR: {
+            TARGET(BIT_XOR) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a ^ b);
-                break;
+                DISPATCH();
             }
-            case Opcode::BIT_AND: {
+            TARGET(BIT_AND) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a & b);
-                break;
+                DISPATCH();
             }
-            case Opcode::BIT_OR: {
+            TARGET(BIT_OR) {
                 int32_t b = pop();
                 int32_t a = pop();
                 push(a | b);
-                break;
+                DISPATCH();
             }
-            case Opcode::SHL: {
+            TARGET(SHL) {
                 int32_t b = pop();
                 int32_t a = pop();
-                if (b < 0 || b >= 32) throw std::runtime_error("Invalid shift amount");
+                if (b < 0 || b >= 32) throw RuntimeError("Invalid shift amount");
                 push(static_cast<int32_t>(static_cast<uint32_t>(a) << b));
-                break;
+                DISPATCH();
             }
-            case Opcode::SHR: {
+            TARGET(SHR) {
                 int32_t b = pop();
                 int32_t a = pop();
-                if (b < 0 || b >= 32) throw std::runtime_error("Invalid shift amount");
-                push(a >> b);
-                break;
+                if (b < 0 || b >= 32) throw RuntimeError("Invalid shift amount");
+                uint32_t ua = static_cast<uint32_t>(a);
+                uint32_t shifted = ua >> b;
+                if (a < 0 && b > 0) {
+                    uint32_t mask = ~(UINT32_MAX >> b);
+                    shifted |= mask;
+                }
+                push(static_cast<int32_t>(shifted));
+                DISPATCH();
             }
-            case Opcode::BIT_NOT: {
+            TARGET(BIT_NOT) {
                 int32_t a = pop();
                 push(~a);
-                break;
+                DISPATCH();
             }
-            case Opcode::NOT: {
+            TARGET(NOT) {
                 int32_t a = pop();
                 push(a == 0 ? 1 : 0);
-                break;
+                DISPATCH();
             }
-            case Opcode::NORMALIZE: {
+            TARGET(NORMALIZE) {
                 int32_t a = pop();
                 push(a == 0 ? 0 : 1);
-                break;
+                DISPATCH();
             }
-            case Opcode::NEG: {
+            TARGET(NEG) {
                 int32_t a = pop();
-                if (a == INT32_MIN) throw std::runtime_error("Integer overflow in negation");
+                if (a == INT32_MIN) throw RuntimeError("Integer overflow in negation");
                 push(-a);
-                break;
+                DISPATCH();
             }
-            case Opcode::POP: {
+            TARGET(POP) {
                 pop();
-                break;
+                DISPATCH();
             }
-            case Opcode::SET_VAR: {
-                int32_t id = chunk.readInt(ip);
-                ip += 4;
-                int32_t val = pop();
-                if (id < 0) throw std::runtime_error("Negative variable ID");
-                if (id >= static_cast<int32_t>(globals.size())) {
-                    if (id > 100000) throw std::runtime_error("Too many variables");
-                    globals.resize(static_cast<size_t>(id) + 1, 0);
-                }
-                globals[id] = val;
-                break;
+            TARGET(SET_VAR) {
+                uint16_t id = chunk.readShort(ip);
+                ip += 2;
+                variables[id] = pop();
+                DISPATCH();
             }
-            case Opcode::SET_VAR_PUSH: {
-                int32_t id = chunk.readInt(ip);
-                ip += 4;
+            TARGET(SET_VAR_PUSH) {
+                uint16_t id = chunk.readShort(ip);
+                ip += 2;
                 int32_t val = pop();
-                if (id < 0) throw std::runtime_error("Negative variable ID");
-                if (id >= static_cast<int32_t>(globals.size())) {
-                    if (id > 100000) throw std::runtime_error("Too many variables");
-                    globals.resize(static_cast<size_t>(id) + 1, 0);
-                }
-                globals[id] = val;
+                variables[id] = val;
                 push(val);
-                break;
+                DISPATCH();
             }
-            case Opcode::GET_VAR: {
-                int32_t id = chunk.readInt(ip);
-                ip += 4;
-                if (id < 0 || id >= static_cast<int32_t>(globals.size())) {
-                    throw std::runtime_error("Undefined variable read");
-                }
-                push(globals[id]);
-                break;
+            TARGET(GET_VAR) {
+                uint16_t id = chunk.readShort(ip);
+                ip += 2;
+                push(variables[id]);
+                DISPATCH();
             }
-            case Opcode::JMP: {
+            TARGET(JMP) {
                 int32_t offset = chunk.readInt(ip);
                 ip += 4;
                 size_t newIp = static_cast<size_t>(static_cast<int64_t>(ip) + offset);
-                if (newIp > chunk.code.size()) throw std::runtime_error("Jump target out of bounds");
+                if (newIp > codeSize) throw RuntimeError("Jump target out of bounds");
                 ip = newIp;
-                break;
+                DISPATCH();
             }
-            case Opcode::JMP_IF_FALSE: {
+            TARGET(JMP_IF_FALSE) {
                 int32_t offset = chunk.readInt(ip);
                 ip += 4;
                 int32_t cond = pop();
                 if (cond == 0) {
                     size_t newIp = static_cast<size_t>(static_cast<int64_t>(ip) + offset);
-                    if (newIp > chunk.code.size()) throw std::runtime_error("Jump target out of bounds");
+                    if (newIp > codeSize) throw RuntimeError("Jump target out of bounds");
                     ip = newIp;
                 }
-                break;
+                DISPATCH();
             }
-            case Opcode::PRINT: {
+            TARGET(PRINT) {
                 int32_t val = pop();
-                std::cout << val << std::endl;
-                break;
+                std::cout << val << '\n';
+                DISPATCH();
             }
-            case Opcode::INPUT: {
+            TARGET(INPUT) {
                 int32_t val;
                 if (!(std::cin >> val)) {
                     std::cin.clear();
                     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                    throw std::runtime_error("Invalid input: expected an integer");
+                    throw RuntimeError("Invalid input: expected an integer");
                 }
                 push(val);
-                break;
+                DISPATCH();
             }
-            case Opcode::HALT: {
+            TARGET(HALT) {
                 return;
             }
+#if !defined(__GNUC__) && !defined(__clang__)
             default:
-                throw std::runtime_error("Unknown Opcode");
+                throw RuntimeError("Unknown Opcode");
+#endif
         }
-    }
-    throw std::runtime_error("Execution reached end of chunk without HALT");
+    throw RuntimeError("Execution reached end of chunk without HALT");
+    } catch (const RuntimeError& e) {
+        sp = savedSp;
+        int line = (ip > 0) ? chunk.getLine(ip - 1) : -1;
+        if (line > 0 && e.line == 0) {
+            throw RuntimeError(e.getRawMsg(), line);
+        }
+        throw;
     } catch (...) {
         sp = savedSp;
         throw;

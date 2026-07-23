@@ -1,3 +1,14 @@
+/**
+ * @file opcode.h
+ * @brief Bytecode instruction set definition for the CVM++ virtual machine.
+ *
+ * Defines the complete Opcode enum as uint8_t values used by the compiler
+ * to emit bytecode and by the VM to execute programs. The instruction set
+ * covers arithmetic, comparison, bitwise, logical, variable access, control
+ * flow, and I/O operations. All opcodes are designed for compact single-byte
+ * encoding with inline operands for maximum bytecode density.
+ */
+
 #pragma once
 #include <cstdint>
 #include <string>
@@ -7,6 +18,8 @@
 enum class Opcode : uint8_t {
     PUSH_INT,
     PUSH_BOOL,
+    PUSH_0,
+    PUSH_1,
     ADD, SUB, MUL, DIV, MOD,
     EQ, NEQ, LT, GT, LTE, GTE,
     BIT_XOR, BIT_AND, BIT_OR, SHL, SHR, BIT_NOT,
@@ -21,29 +34,4 @@ enum class Opcode : uint8_t {
     HALT
 };
 
-struct Chunk {
-    std::vector<uint8_t> code;
-    
-    void write(uint8_t byte) {
-        code.push_back(byte);
-    }
-    
-    void writeInt(int32_t value) {
-        code.push_back((value >> 24) & 0xFF);
-        code.push_back((value >> 16) & 0xFF);
-        code.push_back((value >> 8) & 0xFF);
-        code.push_back(value & 0xFF);
-    }
 
-    int32_t readInt(size_t offset) const {
-        if (code.size() < 4 || offset > code.size() - 4) {
-            throw std::runtime_error("Bytecode truncated: attempted read past end");
-        }
-        return static_cast<int32_t>(
-               (static_cast<uint32_t>(code[offset]) << 24) |
-               (static_cast<uint32_t>(code[offset + 1]) << 16) |
-               (static_cast<uint32_t>(code[offset + 2]) << 8) |
-               (static_cast<uint32_t>(code[offset + 3]))
-        );
-    }
-};

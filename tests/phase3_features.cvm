@@ -1,0 +1,15 @@
+/* This is a block comment
+   It spans multiple lines
+*/
+print 0x1A;    // Expected: 26 (hex)
+print 0b1010;  // Expected: 10 (binary)
+print 0o17;    // Expected: 15 (octal)
+
+let i = 0;
+// Empty for-loop clauses
+for (;;) {
+    if (i == 3) break;
+    print i;
+    i++;
+}
+// Expected: 0, 1, 2

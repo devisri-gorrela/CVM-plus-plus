@@ -1,0 +1,13 @@
+// O2: Logical constant folding
+print true && true;
+// Expected: 1
+print true && false;
+// Expected: 0
+print false || true;
+// Expected: 1
+print false || false;
+// Expected: 0
+print 1 && 0;
+// Expected: 0
+print 0 || 5;
+// Expected: 1

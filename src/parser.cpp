@@ -1,7 +1,18 @@
+/**
+ * @file parser.cpp
+ * @brief Recursive-descent parser implementation for CVM++.
+ *
+ * Implements a full precedence-climbing expression parser and statement parser
+ * that consumes tokens and produces a typed AST. Features error recovery via
+ * synchronize() to allow continued parsing after syntax errors, right-associative
+ * assignment, and support for C-style for-loop initialization clauses.
+ */
+
 #include "parser.h"
+#include "error.h"
 #include <iostream>
 
-Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), current(0) {}
+Parser::Parser(const std::vector<Token>& tokens_) : tokens(tokens_), current(0) {}
 
 std::vector<std::unique_ptr<Statement>> Parser::parse() {
     std::vector<std::unique_ptr<Statement>> statements;
@@ -49,17 +60,21 @@ bool Parser::match(std::initializer_list<TokenType> types) {
 
 const Token& Parser::consume(TokenType type, const std::string& message) {
     if (check(type)) return advance();
-    throw std::runtime_error("Parser Error [" + std::to_string(peek().line) + "]: " + message + " (got '" + peek().value + "')");
+    throw ParseError(message + " (got '" + peek().value + "')", peek().line, peek().column);
 }
 
 void Parser::synchronize() {
+    // Skip tokens until we find a statement boundary, so parsing can resume after an error
     advance();
     while (!isAtEnd()) {
         if (previous().type == TokenType::SEMICOLON) return;
         switch (peek().type) {
             case TokenType::LET:
             case TokenType::IF:
+            case TokenType::FOR:
             case TokenType::WHILE:
+            case TokenType::BREAK:
+            case TokenType::CONTINUE:
             case TokenType::PRINT:
                 return;
             default:
@@ -73,8 +88,7 @@ std::unique_ptr<Statement> Parser::declaration() {
     try {
         if (match({TokenType::LET})) return letDeclaration();
         return statement();
-    } catch (const std::runtime_error& error) {
-        // Simple error reporting and recovery
+    } catch (const ParseError& error) {
         std::cerr << error.what() << '\n';
         synchronize();
         return nullptr;
@@ -94,12 +108,16 @@ std::unique_ptr<Statement> Parser::letDeclaration() {
 std::unique_ptr<Statement> Parser::statement() {
     if (match({TokenType::IF})) return ifStatement();
     if (match({TokenType::PRINT})) return printStatement();
+    if (match({TokenType::FOR})) return forStatement();
     if (match({TokenType::WHILE})) return whileStatement();
+    if (match({TokenType::BREAK})) return breakStatement();
+    if (match({TokenType::CONTINUE})) return continueStatement();
     if (match({TokenType::LBRACE})) return blockStatement();
     return expressionStatement();
 }
 
 std::unique_ptr<Statement> Parser::ifStatement() {
+    int line = previous().line;
     consume(TokenType::LPAREN, "Expect '(' after 'if'.");
     std::unique_ptr<Expression> condition = expression();
     consume(TokenType::RPAREN, "Expect ')' after if condition.");
@@ -111,25 +129,71 @@ std::unique_ptr<Statement> Parser::ifStatement() {
         elseBranch = statement();
     }
 
-    return std::make_unique<IfStmt>(std::move(condition), std::move(thenBranch), std::move(elseBranch));
+    return std::make_unique<IfStmt>(std::move(condition), std::move(thenBranch), std::move(elseBranch), line);
 }
 
 std::unique_ptr<Statement> Parser::whileStatement() {
+    int line = previous().line;
     consume(TokenType::LPAREN, "Expect '(' after 'while'.");
     std::unique_ptr<Expression> condition = expression();
     consume(TokenType::RPAREN, "Expect ')' after while condition.");
     std::unique_ptr<Statement> body = statement();
 
-    return std::make_unique<WhileStmt>(std::move(condition), std::move(body));
+    return std::make_unique<WhileStmt>(std::move(condition), std::move(body), line);
+}
+
+std::unique_ptr<Statement> Parser::forStatement() {
+    int line = previous().line;
+    consume(TokenType::LPAREN, "Expect '(' after 'for'.");
+
+    // for ( <init> ; <condition> ; <increment> ) <body>
+    // init can be omitted, a let declaration, or an expression statement
+    std::unique_ptr<Statement> initializer;
+    if (match({TokenType::SEMICOLON})) {
+        initializer = nullptr;
+    } else if (match({TokenType::LET})) {
+        initializer = letDeclaration();
+    } else {
+        initializer = expressionStatement(); // consumes trailing ';'
+    }
+
+    std::unique_ptr<Expression> condition;
+    if (!check(TokenType::SEMICOLON)) {
+        condition = expression();
+    }
+    consume(TokenType::SEMICOLON, "Expect ';' after for condition.");
+
+    std::unique_ptr<Expression> increment;
+    if (!check(TokenType::RPAREN)) {
+        increment = expression();
+    }
+    consume(TokenType::RPAREN, "Expect ')' after for clauses.");
+
+    std::unique_ptr<Statement> body = statement();
+    return std::make_unique<ForStmt>(std::move(initializer), std::move(condition), std::move(increment), std::move(body), line);
+}
+
+std::unique_ptr<Statement> Parser::breakStatement() {
+    int line = previous().line;
+    consume(TokenType::SEMICOLON, "Expect ';' after 'break'.");
+    return std::make_unique<BreakStmt>(line);
+}
+
+std::unique_ptr<Statement> Parser::continueStatement() {
+    int line = previous().line;
+    consume(TokenType::SEMICOLON, "Expect ';' after 'continue'.");
+    return std::make_unique<ContinueStmt>(line);
 }
 
 std::unique_ptr<Statement> Parser::printStatement() {
+    int line = previous().line;
     std::unique_ptr<Expression> value = expression();
     consume(TokenType::SEMICOLON, "Expect ';' after value.");
-    return std::make_unique<PrintStmt>(std::move(value));
+    return std::make_unique<PrintStmt>(std::move(value), line);
 }
 
 std::unique_ptr<Statement> Parser::blockStatement() {
+    int line = previous().line;
     std::vector<std::unique_ptr<Statement>> statements;
     while (!check(TokenType::RBRACE) && !isAtEnd()) {
         auto decl = declaration();
@@ -138,13 +202,14 @@ std::unique_ptr<Statement> Parser::blockStatement() {
         }
     }
     consume(TokenType::RBRACE, "Expect '}' after block.");
-    return std::make_unique<BlockStmt>(std::move(statements));
+    return std::make_unique<BlockStmt>(std::move(statements), line);
 }
 
 std::unique_ptr<Statement> Parser::expressionStatement() {
     std::unique_ptr<Expression> expr = expression();
+    int line = previous().line;
     consume(TokenType::SEMICOLON, "Expect ';' after expression.");
-    return std::make_unique<ExpressionStmt>(std::move(expr));
+    return std::make_unique<ExpressionStmt>(std::move(expr), line);
 }
 
 std::unique_ptr<Expression> Parser::expression() {
@@ -155,18 +220,25 @@ std::unique_ptr<Expression> Parser::assignment() {
     std::unique_ptr<Expression> expr = logicalOr();
 
     if (match({TokenType::EQUAL})) {
-        std::unique_ptr<Expression> value = assignment();
+        std::unique_ptr<Expression> value = assignment(); // right-associative
 
-        if (auto* varExpr = dynamic_cast<VariableExpr*>(expr.get())) {
+        if (expr->nodeType == NodeType::VariableExpr) {
+            auto* varExpr = static_cast<VariableExpr*>(expr.get());
             Token name = varExpr->name;
             return std::make_unique<AssignExpr>(std::move(name), std::move(value));
         }
 
-        throw std::runtime_error("Invalid assignment target.");
+        Token eq = previous();
+        throw ParseError("Invalid assignment target.", eq.line, eq.column);
     }
 
     return expr;
 }
+
+// The expression parsing functions below follow a standard recursive descent
+// precedence chain, each calling the next-higher-precedence level:
+// logicalOr → logicalAnd → bitwiseOr → bitwiseXor → bitwiseAnd →
+// equality → comparison → shift → term → factor → unary → postfix → primary
 
 std::unique_ptr<Expression> Parser::logicalOr() {
     std::unique_ptr<Expression> expr = logicalAnd();
@@ -269,12 +341,36 @@ std::unique_ptr<Expression> Parser::factor() {
 }
 
 std::unique_ptr<Expression> Parser::unary() {
-    if (match({TokenType::MINUS, TokenType::BIT_NOT, TokenType::NOT})) {
+    if (match({TokenType::PLUS_PLUS, TokenType::MINUS_MINUS})) {
+        Token op = previous();
+        std::unique_ptr<Expression> right = unary();
+        if (right->nodeType != NodeType::VariableExpr) {
+            throw ParseError("Prefix update requires a variable.", op.line, op.column);
+        }
+        auto* varExpr = static_cast<VariableExpr*>(right.get());
+        Token name = varExpr->name;
+        return std::make_unique<UpdateExpr>(std::move(name), op.type == TokenType::PLUS_PLUS, true);
+    }
+    if (match({TokenType::PLUS, TokenType::MINUS, TokenType::BIT_NOT, TokenType::NOT})) {
         Token op = previous();
         std::unique_ptr<Expression> right = unary();
         return std::make_unique<UnaryExpr>(std::move(op), std::move(right));
     }
-    return primary();
+    return postfix();
+}
+
+std::unique_ptr<Expression> Parser::postfix() {
+    std::unique_ptr<Expression> expr = primary();
+    while (match({TokenType::PLUS_PLUS, TokenType::MINUS_MINUS})) {
+        Token op = previous();
+        if (expr->nodeType != NodeType::VariableExpr) {
+            throw ParseError("Postfix update requires a variable.", op.line, op.column);
+        }
+        auto* varExpr = static_cast<VariableExpr*>(expr.get());
+        Token name = varExpr->name;
+        expr = std::make_unique<UpdateExpr>(std::move(name), op.type == TokenType::PLUS_PLUS, false);
+    }
+    return expr;
 }
 
 std::unique_ptr<Expression> Parser::primary() {
@@ -288,12 +384,12 @@ std::unique_ptr<Expression> Parser::primary() {
         return std::make_unique<VariableExpr>(previous());
     }
     if (match({TokenType::INPUT})) {
-        return std::make_unique<InputExpr>();
+        return std::make_unique<InputExpr>(previous().line);
     }
     if (match({TokenType::LPAREN})) {
         std::unique_ptr<Expression> expr = expression();
         consume(TokenType::RPAREN, "Expect ')' after expression.");
         return expr;
     }
-    throw std::runtime_error("Parser Error [" + std::to_string(peek().line) + "]: Expect expression. Got '" + peek().value + "'");
+    throw ParseError("Expect expression. Got '" + peek().value + "'", peek().line, peek().column);
 }

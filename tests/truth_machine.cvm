@@ -1,0 +1,14 @@
+// Truth Machine in CVM++
+// If input is 0, print 0 and exit.
+// If input is 1, print 1 infinitely.
+
+print 8888; // Prompt to enter 0 or 1
+let x = input;
+
+if (x == 0) {
+    print 0;
+} else {
+    while (true) {
+        print 1;
+    }
+}

@@ -1,0 +1,4 @@
+// B1: INT32_MIN literal must be representable
+let x = -2147483648;
+print x;
+// Expected: -2147483648

@@ -1,0 +1,26 @@
+// Simple Calculator in CVM++
+
+print 1111; // Prompt: enter 1 for add, 2 for sub, 3 for mul, 4 for div
+let op = input;
+
+print 2222; // Prompt: enter first number
+let a = input;
+
+print 3333; // Prompt: enter second number
+let b = input;
+
+if (op == 1) {
+    print a + b;
+} else if (op == 2) {
+    print a - b;
+} else if (op == 3) {
+    print a * b;
+} else if (op == 4) {
+    if (b == 0) {
+        print 9999; // Error: division by zero
+    } else {
+        print a / b;
+    }
+} else {
+    print 8888; // Error: unknown operation
+}

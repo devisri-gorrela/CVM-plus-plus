@@ -1,0 +1,11 @@
+let x = 0;
+let y = 1;
+if (false) {
+    x = 100;
+}
+while (false) {
+    y = 200;
+}
+x + y; // Pure expression, should be ignored
+print x;
+print y;
