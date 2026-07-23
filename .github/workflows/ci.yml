@@ -1,4 +1,4 @@
-name: C/C++ CI
+name: CI
 
 on:
   push:
@@ -7,17 +7,67 @@ on:
     branches: [ "main", "master" ]
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    
+
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Configure CMake
       run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
     - name: Build
       run: cmake --build build --config Release
+
+    - name: Run tests (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        passed=0
+        failed=0
+        for f in tests/*.cvm; do
+          echo "--- Running: $f ---"
+          if ./build/cvm "$f"; then
+            passed=$((passed + 1))
+          else
+            echo "FAILED: $f"
+            failed=$((failed + 1))
+          fi
+        done
+        echo ""
+        echo "Results: $passed passed, $failed failed"
+        if [ $failed -ne 0 ]; then exit 1; fi
+
+    - name: Run tests (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $passed = 0
+        $failed = 0
+        Get-ChildItem .\tests\*.cvm | ForEach-Object {
+          Write-Host "--- Running: $($_.Name) ---"
+          & .\build\Release\cvm.exe $_.FullName 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            $passed++
+          } else {
+            Write-Host "FAILED: $($_.Name)"
+            $failed++
+          }
+        }
+        Write-Host ""
+        Write-Host "Results: $passed passed, $failed failed"
+        if ($failed -ne 0) { exit 1 }
+
+    - name: Disassembler smoke test (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: ./build/cvm --dump tests/fibonacci.cvm
+
+    - name: Disassembler smoke test (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: .\build\Release\cvm.exe --dump tests\fibonacci.cvm
